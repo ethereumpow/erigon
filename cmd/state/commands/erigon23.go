@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -110,12 +111,14 @@ func Erigon23(genesis *core.Genesis, chainConfig *params.ChainConfig, logger log
 		return fmt.Errorf("create aggregator: %w", err3)
 	}
 	defer agg.Close()
+	aggContext := agg.MakeContext()
+
 	startTxNum := agg.EndTxNumMinimax()
 	fmt.Printf("Max txNum in files: %d\n", startTxNum)
 
 	interrupt := false
 	if startTxNum == 0 {
-		_, genesisIbs, err := genesis.ToBlock()
+		genBlock, genesisIbs, err := genesis.ToBlock()
 		if err != nil {
 			return err
 		}
@@ -126,6 +129,15 @@ func Erigon23(genesis *core.Genesis, chainConfig *params.ChainConfig, logger log
 		}
 		if err = agg.FinishTx(); err != nil {
 			return err
+		}
+
+		blockRootHash, err := agg.ComputeCommitment(aggContext)
+		if err != nil {
+			return err
+		}
+		genesisRootHash := genBlock.Root()
+		if !bytes.Equal(blockRootHash, genesisRootHash[:]) {
+			return fmt.Errorf("genesis root hash mismatch: expected %x got %x", genesisRootHash, blockRootHash)
 		}
 	}
 
@@ -192,7 +204,7 @@ func Erigon23(genesis *core.Genesis, chainConfig *params.ChainConfig, logger log
 		agg.SetTx(rwTx)
 		agg.SetTxNum(txNum)
 
-		if txNum, _, err = processBlock23(startTxNum, trace, txNum, readWrapper, writeWrapper, chainConfig, engine, getHeader, b, vmConfig); err != nil {
+		if txNum, _, err = processBlock23(aggContext, startTxNum, trace, txNum, readWrapper, writeWrapper, chainConfig, engine, getHeader, b, vmConfig); err != nil {
 			return fmt.Errorf("processing block %d: %w", blockNum, err)
 		}
 
@@ -271,7 +283,7 @@ func (s *stat23) delta(aStats libstate.FilesStats, blockNum uint64) *stat23 {
 	return s
 }
 
-func processBlock23(startTxNum uint64, trace bool, txNumStart uint64, rw *ReaderWrapper23, ww *WriterWrapper23, chainConfig *params.ChainConfig,
+func processBlock23(agCtx *libstate.AggregatorContext, startTxNum uint64, trace bool, txNumStart uint64, rw *ReaderWrapper23, ww *WriterWrapper23, chainConfig *params.ChainConfig,
 	engine consensus.Engine, getHeader func(hash common.Hash, number uint64) *types.Header, block *types.Block, vmConfig vm.Config,
 ) (uint64, types.Receipts, error) {
 	defer blockExecutionTimer.UpdateDuration(time.Now())
@@ -355,7 +367,6 @@ func processBlock23(startTxNum uint64, trace bool, txNumStart uint64, rw *Reader
 			}
 		}
 	}
-
 	if txNum >= startTxNum {
 		ibs := state.New(rw)
 		if err := ww.w.AddTraceTo(block.Coinbase().Bytes()); err != nil {
@@ -384,6 +395,14 @@ func processBlock23(startTxNum uint64, trace bool, txNumStart uint64, rw *Reader
 		}
 	}
 
+	rootHash, err := ww.w.ComputeCommitment(agCtx)
+	if err != nil {
+		return 0, nil, err
+	}
+	if !bytes.Equal(rootHash, header.Root[:]) {
+		return 0, nil, fmt.Errorf("invalid root hash for block %d: expected %x got %x", block.NumberU64(), header.Root, rootHash)
+	}
+
 	txNum++ // Post-block transaction
 	ww.w.SetTxNum(txNum)
 
@@ -399,6 +418,7 @@ type ReaderWrapper23 struct {
 
 type WriterWrapper23 struct {
 	blockNum uint64
+	ac       *libstate.AggregatorContext
 	w        *libstate.Aggregator
 }
 
@@ -410,7 +430,6 @@ func (rw *ReaderWrapper23) ReadAccountData(address common.Address) (*accounts.Ac
 	if len(enc) == 0 {
 		return nil, nil
 	}
-
 	var a accounts.Account
 	a.Reset()
 	pos := 0
@@ -486,6 +505,7 @@ func (ww *WriterWrapper23) UpdateAccountData(address common.Address, original, a
 	}
 	value := make([]byte, l)
 	pos := 0
+
 	if account.Nonce == 0 {
 		value[pos] = 0
 		pos++

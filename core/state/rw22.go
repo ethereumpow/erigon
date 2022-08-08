@@ -656,7 +656,7 @@ func (r *trieReader) accountFn(plainKey []byte, cell *commitment.Cell) (err erro
 	}
 	cell.Nonce = account.Nonce
 	cell.Balance.SetBytes(account.Balance.Bytes())
-	copy(cell.CodeHash[:], account.CodeHash[:])
+	// copy(cell.CodeHash[:], account.CodeHash[:])
 
 	enc = r.rs.get(kv.Code, plainKey)
 	if enc != nil {
