@@ -5,7 +5,7 @@ go 1.18
 replace github.com/ledgerwatch/erigon-lib => ../erigon-lib
 
 require (
-	github.com/ledgerwatch/erigon-lib v0.0.0-20220808154951-7fe471f22de9
+	github.com/ledgerwatch/erigon-lib v0.0.0-20220809191504-73d869bc9e3d
 	github.com/ledgerwatch/erigon-snapshot v1.0.0
 	github.com/ledgerwatch/log/v3 v3.4.1
 	github.com/ledgerwatch/secp256k1 v1.0.0
@@ -173,9 +173,6 @@ require (
 
 require (
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
-	github.com/btcsuite/btcd/btcec/v2 v2.2.0 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
-	github.com/ethereum/go-ethereum v1.10.21 // indirect
-	github.com/ledgerwatch/interfaces v0.0.0-20220803041830-390c8d28c921 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	gotest.tools/v3 v3.3.0 // indirect
 )

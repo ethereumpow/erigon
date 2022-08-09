@@ -20,9 +20,10 @@ import (
 	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	kv2 "github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	libstate "github.com/ledgerwatch/erigon-lib/state"
-	"github.com/ledgerwatch/erigon/turbo/services"
 	"github.com/ledgerwatch/log/v3"
 	"github.com/spf13/cobra"
+
+	"github.com/ledgerwatch/erigon/turbo/services"
 
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/consensus"
@@ -111,7 +112,6 @@ func Erigon23(genesis *core.Genesis, chainConfig *params.ChainConfig, logger log
 		return fmt.Errorf("create aggregator: %w", err3)
 	}
 	defer agg.Close()
-	aggContext := agg.MakeContext()
 
 	startTxNum := agg.EndTxNumMinimax()
 	fmt.Printf("Max txNum in files: %d\n", startTxNum)
@@ -131,7 +131,7 @@ func Erigon23(genesis *core.Genesis, chainConfig *params.ChainConfig, logger log
 			return err
 		}
 
-		blockRootHash, err := agg.ComputeCommitment(aggContext)
+		blockRootHash, err := agg.ComputeCommitment(false)
 		if err != nil {
 			return err
 		}
@@ -204,7 +204,7 @@ func Erigon23(genesis *core.Genesis, chainConfig *params.ChainConfig, logger log
 		agg.SetTx(rwTx)
 		agg.SetTxNum(txNum)
 
-		if txNum, _, err = processBlock23(aggContext, startTxNum, trace, txNum, readWrapper, writeWrapper, chainConfig, engine, getHeader, b, vmConfig); err != nil {
+		if txNum, _, err = processBlock23(startTxNum, trace, txNum, readWrapper, writeWrapper, chainConfig, engine, getHeader, b, vmConfig); err != nil {
 			return fmt.Errorf("processing block %d: %w", blockNum, err)
 		}
 
@@ -283,7 +283,7 @@ func (s *stat23) delta(aStats libstate.FilesStats, blockNum uint64) *stat23 {
 	return s
 }
 
-func processBlock23(agCtx *libstate.AggregatorContext, startTxNum uint64, trace bool, txNumStart uint64, rw *ReaderWrapper23, ww *WriterWrapper23, chainConfig *params.ChainConfig,
+func processBlock23(startTxNum uint64, trace bool, txNumStart uint64, rw *ReaderWrapper23, ww *WriterWrapper23, chainConfig *params.ChainConfig,
 	engine consensus.Engine, getHeader func(hash common.Hash, number uint64) *types.Header, block *types.Block, vmConfig vm.Config,
 ) (uint64, types.Receipts, error) {
 	defer blockExecutionTimer.UpdateDuration(time.Now())
@@ -395,7 +395,10 @@ func processBlock23(agCtx *libstate.AggregatorContext, startTxNum uint64, trace 
 		}
 	}
 
-	rootHash, err := ww.w.ComputeCommitment(agCtx)
+	if header.Number.Uint64() == 12841 {
+		trace = true
+	}
+	rootHash, err := ww.w.ComputeCommitment(trace)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -418,7 +421,6 @@ type ReaderWrapper23 struct {
 
 type WriterWrapper23 struct {
 	blockNum uint64
-	ac       *libstate.AggregatorContext
 	w        *libstate.Aggregator
 }
 
