@@ -15,13 +15,14 @@ import (
 	"time"
 
 	"github.com/holiman/uint256"
+	"github.com/ledgerwatch/log/v3"
+	"github.com/spf13/cobra"
+
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	"github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	kv2 "github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	libstate "github.com/ledgerwatch/erigon-lib/state"
-	"github.com/ledgerwatch/log/v3"
-	"github.com/spf13/cobra"
 
 	"github.com/ledgerwatch/erigon/turbo/services"
 
@@ -47,6 +48,8 @@ func init() {
 	withDataDir(erigon23Cmd)
 	withChain(erigon23Cmd)
 
+	erigon23Cmd.Flags().IntVar(&commitmentFrequency, "commfreq", 25000, "how many blocks to skip between calculating commitment")
+	erigon23Cmd.Flags().BoolVar(&commitments, "commitments", false, "set to true to calculate commitments")
 	rootCmd.AddCommand(erigon23Cmd)
 }
 
@@ -135,9 +138,11 @@ func Erigon23(genesis *core.Genesis, chainConfig *params.ChainConfig, logger log
 		if err != nil {
 			return err
 		}
-		genesisRootHash := genBlock.Root()
-		if !bytes.Equal(blockRootHash, genesisRootHash[:]) {
-			return fmt.Errorf("genesis root hash mismatch: expected %x got %x", genesisRootHash, blockRootHash)
+		if commitments {
+			genesisRootHash := genBlock.Root()
+			if !bytes.Equal(blockRootHash, genesisRootHash[:]) {
+				return fmt.Errorf("genesis root hash mismatch: expected %x got %x", genesisRootHash, blockRootHash)
+			}
 		}
 	}
 
@@ -394,16 +399,14 @@ func processBlock23(startTxNum uint64, trace bool, txNumStart uint64, rw *Reader
 			fmt.Printf("FinishTx called for %d block %d\n", txNum, block.NumberU64())
 		}
 	}
-
-	if header.Number.Uint64() == 12841 {
-		trace = true
-	}
-	rootHash, err := ww.w.ComputeCommitment(trace)
-	if err != nil {
-		return 0, nil, err
-	}
-	if !bytes.Equal(rootHash, header.Root[:]) {
-		return 0, nil, fmt.Errorf("invalid root hash for block %d: expected %x got %x", block.NumberU64(), header.Root, rootHash)
+	if commitments && block.Number().Uint64()%uint64(commitmentFrequency) == 0 {
+		rootHash, err := ww.w.ComputeCommitment(trace)
+		if err != nil {
+			return 0, nil, err
+		}
+		if !bytes.Equal(rootHash, header.Root[:]) {
+			return 0, nil, fmt.Errorf("invalid root hash for block %d: expected %x got %x", block.NumberU64(), header.Root, rootHash)
+		}
 	}
 
 	txNum++ // Post-block transaction
