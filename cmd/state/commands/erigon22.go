@@ -16,14 +16,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ledgerwatch/log/v3"
+	"github.com/spf13/cobra"
+	"golang.org/x/sync/semaphore"
+
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
 	"github.com/ledgerwatch/erigon-lib/common/dir"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	kv2 "github.com/ledgerwatch/erigon-lib/kv/mdbx"
 	libstate "github.com/ledgerwatch/erigon-lib/state"
-	"github.com/ledgerwatch/log/v3"
-	"github.com/spf13/cobra"
-	"golang.org/x/sync/semaphore"
 
 	"github.com/ledgerwatch/erigon/cmd/sentry/sentry"
 	"github.com/ledgerwatch/erigon/common"
@@ -191,7 +192,7 @@ func (rw *Worker22) runTxTask(txTask *state.TxTask) {
 	}
 
 	var err error
-	if txTask.BlockNum < 2 && txTask.TxIndex == -1 {
+	if txTask.BlockNum < 1 && txTask.TxIndex == -1 {
 		fmt.Printf("txNum=%d, blockNum=%d, Genesis\n", txTask.TxNum, txTask.BlockNum)
 		// Genesis block
 		var genBlock *types.Block

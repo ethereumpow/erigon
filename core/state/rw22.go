@@ -5,20 +5,15 @@ import (
 	"container/heap"
 	"encoding/binary"
 	"fmt"
-	"hash"
 	"math/bits"
 	"sync"
 	"unsafe"
 
 	"github.com/google/btree"
 	"github.com/holiman/uint256"
-	"github.com/ledgerwatch/erigon-lib/commitment"
 	libcommon "github.com/ledgerwatch/erigon-lib/common"
-	"github.com/ledgerwatch/erigon-lib/common/length"
 	"github.com/ledgerwatch/erigon-lib/kv"
 	libstate "github.com/ledgerwatch/erigon-lib/state"
-	"golang.org/x/crypto/sha3"
-
 	"github.com/ledgerwatch/erigon/common"
 	"github.com/ledgerwatch/erigon/common/dbutils"
 	"github.com/ledgerwatch/erigon/core/types"
@@ -37,8 +32,8 @@ type TxTask struct {
 	Block              *types.Block
 	BlockHash          common.Hash
 	Sender             *common.Address
-	TxIndex            int  // -1 for block initialisation
-	Final              bool // true for latest tx in block
+	TxIndex            int // -1 for block initialisation
+	Final              bool
 	Tx                 types.Transaction
 	BalanceIncreaseSet map[common.Address]uint256.Int
 	ReadLists          map[string]*KvList
@@ -318,13 +313,13 @@ func (rs *State22) Apply(emptyRemoval bool, roTx kv.Tx, txTask *TxTask, agg *lib
 				return err
 			}
 		}
-		a := new(accounts.Account)
+		var a accounts.Account
 		if err := a.DecodeForStorage(enc0); err != nil {
 			return err
 		}
 		if len(enc0) > 0 {
 			// Need to convert before balance increase
-			enc0 = serialise2(a)
+			enc0 = serialise2(&a)
 		}
 		a.Balance.Add(&a.Balance, &increase)
 		var enc1 []byte
@@ -464,21 +459,9 @@ func (rs *State22) Apply(emptyRemoval bool, roTx kv.Tx, txTask *TxTask, agg *lib
 			}
 		}
 	}
-	if txTask.Final {
-		tr := NewTrieReader(rs, agg.MakeContext())
-		rootHash, err := agg.ComputeCommitment(tr.branchFn, tr.accountFn, tr.storageFn, tr.trieMerge)
-		if err != nil {
-			return err
-		}
-		if !bytes.Equal(txTask.Header.Root.Bytes(), rootHash) {
-			// return fmt.Errorf("invalid block hash evaluated for block %d expected %v but got %x", txTask.BlockNum, txTask.Header.Root.String(), rootHash)
-			fmt.Printf("invalid block hash evaluated for block %d expected %v but got %x\n", txTask.BlockNum, txTask.Header.Root.String(), rootHash)
-		}
-	}
 	if err := agg.FinishTx(); err != nil {
 		return err
 	}
-
 	if txTask.WriteLists != nil {
 		for table, list := range txTask.WriteLists {
 			for i, key := range list.Keys {
@@ -533,175 +516,6 @@ func (rs *State22) ReadsValid(readLists map[string]*KvList) bool {
 		}
 	}
 	return true
-}
-
-type trieReader struct {
-	rs     *State22
-	ctx    *libstate.Aggregator22Context
-	keccak hash.Hash
-}
-
-func NewTrieReader(rs *State22, ctx *libstate.Aggregator22Context) *trieReader {
-	return &trieReader{rs: rs, ctx: ctx, keccak: sha3.NewLegacyKeccak256()}
-}
-
-func (r *trieReader) trieMerge(prefix []byte, update commitment.BranchData) (commitment.BranchData, error) {
-	stateValue := r.rs.get(kv.StateCommitment, prefix)
-	if len(stateValue) == 0 {
-		found, prevTxNum := r.ctx.MaxCommitmentTxNum(prefix)
-		if found {
-			history, found, _, err := r.ctx.ReadCommitmentNoState(prefix, prevTxNum)
-			if err != nil {
-				return nil, err
-			}
-			if !found {
-				history = make([]byte, 0)
-			}
-			stateValue = history
-		}
-	}
-
-	var refNum uint32
-	var encodedNum []byte
-	if len(stateValue) >= 4 {
-		refNum = binary.BigEndian.Uint32(stateValue[:4])
-		encodedNum = stateValue[:4]
-		stateValue = stateValue[4:]
-	}
-
-	stated := commitment.BranchData(stateValue)
-	if bytes.Equal(stated, update) {
-		return append(encodedNum, stated...), nil
-	}
-
-	merged, err := update.MergeHexBranches(stated, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	// fmt.Printf("computeCommitment merge [%x] [%x]+[%x]=>[%x]\n", prefix, stated, update, merged)
-	update = merged
-
-	refNumAndValue := make([]byte, 4+len(merged))
-	binary.BigEndian.PutUint32(refNumAndValue[:4], refNum+1)
-	copy(refNumAndValue[4:], merged)
-
-	r.rs.put(kv.StateCommitment, prefix, refNumAndValue)
-	return refNumAndValue, nil
-}
-
-func (r *trieReader) branchFn(prefix []byte) ([]byte, error) {
-	// Look in the summary table first
-	stateValue := r.rs.get(kv.StateCommitment, prefix)
-	if stateValue != nil {
-		stateValue = stateValue[4:]
-	}
-	// var stateValue []byte
-	// Look in the files and merge, while it becomes complete
-	for stateValue == nil || !commitment.BranchData(stateValue).IsComplete() {
-		found, txNum := r.ctx.MaxCommitmentTxNum(prefix)
-		if !found {
-			return nil, nil
-		}
-		historyValue, found, _, err := r.ctx.ReadCommitmentNoState(prefix, txNum)
-		if err != nil {
-			return nil, fmt.Errorf("history commitment prefix %x: %w", prefix, err)
-		}
-		if historyValue == nil {
-			if stateValue == nil {
-				return nil, nil
-			}
-			panic(fmt.Sprintf("Incomplete branch data prefix [%x], mergeVal=[%x], maxTxNum=%d\n", commitment.CompactedKeyToHex(prefix), stateValue, txNum))
-		}
-		//fmt.Printf("Pre-merge prefix [%x] [%x]+[%x], startBlock %d\n", commitment.CompactToHex(prefix), val, mergedVal, startBlock)
-		if stateValue == nil {
-			stateValue = historyValue
-		} else if stateValue, err = commitment.BranchData(historyValue).MergeHexBranches(stateValue, nil); err != nil {
-			return nil, err
-		}
-		//fmt.Printf("Post-merge prefix [%x] [%x], startBlock %d\n", commitment.CompactToHex(prefix), mergedVal, startBlock)
-	}
-	if stateValue == nil {
-		return nil, nil
-	}
-	//fmt.Printf("Returning branch data prefix [%x], mergeVal=[%x], startBlock=%d\n", commitment.CompactToHex(prefix), mergedVal, startBlock)
-	return stateValue[2:], nil // Skip touchMap but keep afterMap
-}
-
-func (r *trieReader) accountFn(plainKey []byte, cell *commitment.Cell) (err error) {
-	// Look in the summary table first
-	enc := r.rs.get(kv.PlainState, plainKey)
-	if enc != nil {
-		// enc = enc[4:]
-	} else {
-		// Look in the files
-		found, txNum := r.ctx.MaxAccountsTxNum(plainKey)
-		if !found {
-			return nil
-		}
-		enc, found, _, err = r.ctx.ReadAccountDataNoState(plainKey, txNum)
-		if err != nil {
-			return fmt.Errorf("history read account key %x: %v", plainKey, err)
-		}
-	}
-
-	cell.Nonce = 0
-	cell.Balance.Clear()
-	copy(cell.CodeHash[:], commitment.EmptyCodeHash)
-
-	account := new(accounts.Account)
-	err = account.DecodeForStorage(enc)
-	if err != nil {
-		return err
-	}
-	cell.Nonce = account.Nonce
-	cell.Balance.SetBytes(account.Balance.Bytes())
-	// copy(cell.CodeHash[:], account.CodeHash[:])
-
-	enc = r.rs.get(kv.Code, plainKey)
-	if enc != nil {
-		// enc = enc[4:]
-	} else {
-		// Look in the files
-		found, txNum := r.ctx.MaxCodeTxNum(plainKey)
-		if !found {
-			return nil
-		}
-		enc, found, _, err = r.ctx.ReadAccountCodeNoState(plainKey, txNum)
-		if err != nil {
-			return fmt.Errorf("history read account code by key %x: %v", plainKey, err)
-		}
-		if len(enc) > 0 {
-			// r.keccak.Reset()
-			// r.keccak.Write(enc)
-			// r.keccak.Sum(cell.CodeHash[:])
-			//r.keccak.(io.Reader).Read()
-			copy(cell.CodeHash[:], enc)
-		}
-	}
-	return nil
-}
-
-func (r *trieReader) storageFn(plainKey []byte, cell *commitment.Cell) error {
-	// Look in the summary table first
-	enc := r.rs.get(kv.PlainState, plainKey)
-	if enc != nil {
-		// enc = enc[4:]
-	} else {
-		// Look in the files
-		found, txNum := r.ctx.MaxStorageTxNum(plainKey[:length.Addr], plainKey[length.Addr:])
-		if !found {
-			return nil
-		}
-		var err error
-		enc, found, _, err = r.ctx.ReadAccountStorageNoState(plainKey[:length.Addr], plainKey[length.Addr:], txNum)
-		if err != nil {
-			return fmt.Errorf("history read storage key %x: %v", plainKey, err)
-		}
-	}
-	cell.StorageLen = len(enc)
-	copy(cell.Storage[:], enc)
-	return nil
 }
 
 // KvList sort.Interface to sort write list by keys
